@@ -5,12 +5,13 @@
 #include <chrono>
 #include <thread>
 #include <random>
-//threading library: python requests 
+#include <mutex> // For thread synchronization
+
 // Define constants
 const int DEFAULT_BUFFER_SIZE = 100; // Default buffer size
 const double DEFAULT_ARBITER_WEIGHT = 0.5; // Default arbiter weight
-const int READ_LATENCY = 1; //in cycles 
-const int WRITE_LATENCY = 2; //in cycles 
+const int READ_LATENCY = 1; // in cycles
+const int WRITE_LATENCY = 2; // in cycles
 
 // Define constants for request types
 const int READ_REQUEST = 0;
@@ -28,16 +29,28 @@ class SystemMemory {
 public:
     // Method to read data from memory with latency
     void readDataWithLatency(int address, int latency) {
+        auto start = std::chrono::high_resolution_clock::now(); // Record start time
+
         // Simulate read operation with latency
         std::cout << "Reading data from memory at address " << address << " with latency of " << latency << " cycles." << std::endl;
         std::this_thread::sleep_for(std::chrono::milliseconds(latency)); // Simulate read latency
+
+        auto end = std::chrono::high_resolution_clock::now(); // Record end time
+        std::chrono::duration<double, std::milli> sleep_time = end - start; // Calculate sleep time in milliseconds
+        std::cout<<sleep_time.count()<<std::endl; // Return sleep time in milliseconds
     }
 
     // Method to write data to memory with latency
-    void writeDataWithLatency(int address, int data, int latency) {
-        // Simulate write operation with latency
-        std::cout << "Writing data " << data << " to memory at address " << address << " with latency of " << latency << " cycles." << std::endl;
-        std::this_thread::sleep_for(std::chrono::milliseconds(latency)); // Simulate write latency
+    void writeDataWithLatency(int address, int data,int latency) {
+        auto start = std::chrono::high_resolution_clock::now(); // Record start time
+
+        // Simulate read operation with latency
+        std::cout << "Reading data from memory at address " << address <<"with data" << data<< " with latency of " << latency << " cycles." << std::endl;
+        std::this_thread::sleep_for(std::chrono::milliseconds(latency)); // Simulate read latency
+
+        auto end = std::chrono::high_resolution_clock::now(); // Record end time
+        std::chrono::duration<double, std::milli> sleep_time = end - start; // Calculate sleep time in milliseconds
+        std::cout<<sleep_time.count()<<std::endl; // Return sleep time in milliseconds
     }
 };
 
@@ -45,10 +58,12 @@ public:
 class CPU {
 private:
     std::queue<Request> requestBuffer; // Request buffer for CPU
+    std::mutex bufferMutex; // Mutex for thread synchronization
 
 public:
     // Method to send read request to memory
-    void sendReadRequest(SystemMemory& memory, int address) {
+    void sendReadRequest(int address) {
+        std::lock_guard<std::mutex> lock(bufferMutex); // Lock the buffer during modification
         Request request;
         request.type = READ_REQUEST;
         request.address = address;
@@ -56,7 +71,8 @@ public:
     }
 
     // Method to send write request to memory
-    void sendWriteRequest(SystemMemory& memory, int address, int data) {
+    void sendWriteRequest(int address, int data) {
+        std::lock_guard<std::mutex> lock(bufferMutex); // Lock the buffer during modification
         Request request;
         request.type = WRITE_REQUEST;
         request.address = address;
@@ -66,6 +82,7 @@ public:
 
     // Method to process pending requests
     void processRequests(SystemMemory& memory) {
+        std::lock_guard<std::mutex> lock(bufferMutex); // Lock the buffer during processing
         while (!requestBuffer.empty()) {
             Request request = requestBuffer.front();
             requestBuffer.pop();
@@ -82,10 +99,12 @@ public:
 class IO {
 private:
     std::queue<Request> requestBuffer; // Request buffer for IO
+    std::mutex bufferMutex; // Mutex for thread synchronization
 
 public:
     // Method to send read request to memory
-    void sendReadRequest(SystemMemory& memory, int address) {
+    void sendReadRequest(int address) {
+        std::lock_guard<std::mutex> lock(bufferMutex); // Lock the buffer during modification
         Request request;
         request.type = READ_REQUEST;
         request.address = address;
@@ -93,7 +112,8 @@ public:
     }
 
     // Method to send write request to memory
-    void sendWriteRequest(SystemMemory& memory, int address, int data) {
+    void sendWriteRequest(int address, int data) {
+        std::lock_guard<std::mutex> lock(bufferMutex); // Lock the buffer during modification
         Request request;
         request.type = WRITE_REQUEST;
         request.address = address;
@@ -103,6 +123,7 @@ public:
 
     // Method to process pending requests
     void processRequests(SystemMemory& memory) {
+        std::lock_guard<std::mutex> lock(bufferMutex); // Lock the buffer during processing
         while (!requestBuffer.empty()) {
             Request request = requestBuffer.front();
             requestBuffer.pop();
@@ -122,6 +143,7 @@ private:
     std::unordered_map<std::string, double> arbiterWeights; // Arbiter weights for each agent
     int operatingFrequency; // Operating frequency of NoC
     bool memoryAccessInProgress; // Flag to indicate if memory access is in progress
+    std::mutex queueMutex; // Mutex for thread synchronization
 
 public:
     NoC(int frequency) : operatingFrequency(frequency), memoryAccessInProgress(false) {}
@@ -135,6 +157,7 @@ public:
     }
 
     void throttle() {
+        std::lock_guard<std::mutex> lock(queueMutex); // Lock the queues during processing
         for (const auto& [agent_type, queue] : requestQueues) {
             double queue_utilization = static_cast<double>(queue.size()) / bufferSizes[agent_type];
             if (queue_utilization >= 0.9) {
@@ -147,11 +170,16 @@ public:
 
     std::string selectNextAgent() {
         std::vector<std::string> agents;
-        for (const auto& [agent_type, weight] : arbiterWeights) {
-            for (int i = 0; i < weight * 10; ++i) { // Multiply by 10 for finer granularity
-                agents.push_back(agent_type);
-            }
+        double cpuWeight = arbiterWeights["CPU"];
+        if (cpuWeight > 0) {
+            agents.push_back("CPU");
         }
+        double ioWeight = arbiterWeights["IO"];
+        if (ioWeight > 0) {
+            agents.push_back("IO");
+        }
+
+        // Randomly select an agent from the vector
         std::random_device rd;
         std::mt19937 gen(rd());
         std::uniform_int_distribution<> dis(0, agents.size() - 1);
@@ -159,23 +187,24 @@ public:
     }
 
     void sendRequest(SystemMemory& memory, std::string agentType, int address, int data = 0) {
+        std::lock_guard<std::mutex> lock(queueMutex); // Lock the queues during processing
         if (memoryAccessInProgress) {
             std::cout << "Memory access in progress. Waiting for previous operation to complete..." << std::endl;
-            std::this_thread::sleep_for(std::chrono::seconds(10)); 
+            std::this_thread::sleep_for(std::chrono::seconds(10));
         }
 
         int latency = (agentType == "CPU") ? READ_LATENCY : WRITE_LATENCY;
 
         // Simulate memory access with latency
         if (data == 0) {
-            memory.readDataWithLatency(address, latency); 
+            memory.readDataWithLatency(address, latency);
         } else {
-            memory.writeDataWithLatency(address, data, latency); 
+            memory.writeDataWithLatency(address, data, latency);
         }
 
         memoryAccessInProgress = true;
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(latency)); 
+        std::this_thread::sleep_for(std::chrono::milliseconds(latency));
         memoryAccessInProgress = false;
     }
 };
@@ -190,14 +219,17 @@ int main() {
     // Example usage of NoC APIs
     noc.setMaxBufferSize(1, DEFAULT_BUFFER_SIZE); // Set buffer 1 size
     noc.setArbiterWeights("CPU", DEFAULT_ARBITER_WEIGHT); // Set arbiter weight for CPU
-
+    noc.setArbiterWeights("IO",DEFAULT_ARBITER_WEIGHT);
     // Simulate memory access with read latency
-    noc.sendRequest(memory, "CPU", 0x1234); // CPU sends a read request to memory
+    cpu.sendReadRequest(0x1234); // CPU sends a read request to memory
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Simulate processing time
+    io.sendWriteRequest(0x5678, 42); // IO sends a write request to memory
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Simulate processing time
 
-    // Simulate memory access with write latency
-    noc.sendRequest(memory, "IO", 0x5678, 42); // IO sends a write request to memory
+    // Process requests and throttle if necessary
+    cpu.processRequests(memory);
+    io.processRequests(memory);
+    noc.throttle();
 
     return 0;
 }
-
-// add threads throttle 
